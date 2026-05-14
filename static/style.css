@@ -271,6 +271,31 @@ button:disabled {
   font: 16px/1.68 ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
 }
 
+.preview-block {
+  margin: 0 0 1em;
+  padding: 7px 10px;
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.preview-block:hover,
+.preview-block:focus-visible {
+  background: #f0f6f1;
+  border-left-color: #9fb9aa;
+  outline: none;
+}
+
+.preview-block.is-selected {
+  background: #eaf5ee;
+  border-left-color: var(--accent);
+}
+
+.preview-block > :last-child {
+  margin-bottom: 0;
+}
+
 .preview.empty::before {
   content: "Preview";
   color: #8b978f;

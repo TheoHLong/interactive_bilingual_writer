@@ -27,6 +27,9 @@
   let lastSourceSent = "";
   let latestTranslation = "";
   let latestLangs = { source: "Source", target: "Translation" };
+  let latestSourceBlocks = [];
+  let latestPreviewBlocks = [];
+  let selectedPreviewBlockId = null;
   let isComposing = false;
 
   function loadInitialState() {
@@ -176,6 +179,7 @@
     if (isComposing && !force) return;
     const sourceText = els.sourceInput.value;
     const blocks = splitBlocks(sourceText, els.sourceInput.selectionStart || 0);
+    latestSourceBlocks = blocks;
     const activeBlock = blocks.find((block) => block.active);
     const thresholdText = activeBlock ? activeBlock.text : sourceText;
     const minChars = effectiveMinChars(thresholdText);
@@ -196,6 +200,7 @@
 
     if (segments.length === 0) {
       latestTranslation = "";
+      latestPreviewBlocks = [];
       renderPreview("");
       setStatus("Idle", null);
       return;
@@ -241,14 +246,26 @@
       let streamError = null;
 
       const renderStreamState = () => {
-        const translatedBlocks = blocks.map((block) => {
-          if (doneById.has(block.id)) return doneById.get(block.id);
-          if (partialById.has(block.id)) return partialById.get(block.id) || "...";
-          if (includedIds.has(block.id)) return "...";
-          return "*Editing...*";
+        const previewBlocks = blocks.map((block) => {
+          let markdown = "*Editing...*";
+          if (doneById.has(block.id)) {
+            markdown = doneById.get(block.id);
+          } else if (partialById.has(block.id)) {
+            markdown = partialById.get(block.id) || "...";
+          } else if (includedIds.has(block.id)) {
+            markdown = "...";
+          }
+          return {
+            id: block.id,
+            markdown,
+            sourceStart: block.start,
+            sourceEnd: block.end,
+            sourceText: block.text
+          };
         });
-        latestTranslation = translatedBlocks.join("\n\n");
-        renderPreview(latestTranslation);
+        latestTranslation = previewBlocks.map((block) => block.markdown).join("\n\n");
+        latestPreviewBlocks = previewBlocks;
+        renderPreviewBlocks(previewBlocks);
       };
 
       const handleEvent = (event) => {
@@ -360,13 +377,41 @@
 
   function renderPreview(markdown) {
     if (!markdown.trim()) {
-      els.preview.classList.add("empty");
-      els.preview.innerHTML = "";
+      clearPreview();
       return;
     }
     els.preview.classList.remove("empty");
     els.preview.innerHTML = renderMarkdown(markdown);
     highlightPreview();
+  }
+
+  function renderPreviewBlocks(blocks) {
+    if (!blocks.some((block) => block.markdown.trim())) {
+      clearPreview();
+      return;
+    }
+
+    els.preview.classList.remove("empty");
+    els.preview.innerHTML = blocks
+      .map((block) => {
+        const isSelected = String(block.id) === selectedPreviewBlockId;
+        return [
+          `<section class="preview-block${isSelected ? " is-selected" : ""}"`,
+          ` data-block-id="${escapeAttribute(block.id)}"`,
+          ` data-source-start="${escapeAttribute(block.sourceStart)}"`,
+          ` data-source-end="${escapeAttribute(block.sourceEnd)}" tabindex="0">`,
+          renderMarkdown(block.markdown),
+          "</section>"
+        ].join("");
+      })
+      .join("");
+    highlightPreview();
+  }
+
+  function clearPreview() {
+    els.preview.classList.add("empty");
+    els.preview.innerHTML = "";
+    latestPreviewBlocks = [];
   }
 
   function renderMarkdown(markdown) {
@@ -378,6 +423,121 @@
       });
     }
     return `<pre>${escapeHtml(markdown)}</pre>`;
+  }
+
+  function jumpToSourceBlock(blockId) {
+    const block = findSourceBlockForPreview(blockId);
+    if (!block) return;
+
+    selectedPreviewBlockId = String(blockId);
+    updatePreviewSelection();
+
+    const cursorPosition = Math.min(block.start, els.sourceInput.value.length);
+    els.sourceInput.setSelectionRange(cursorPosition, cursorPosition);
+    scrollSourceToPosition(cursorPosition);
+    try {
+      els.sourceInput.focus({ preventScroll: true });
+    } catch (_error) {
+      els.sourceInput.focus();
+    }
+  }
+
+  function findSourceBlockForPreview(blockId) {
+    const id = String(blockId);
+    const currentBlocks = splitBlocks(els.sourceInput.value, -1);
+    const previewBlock = latestPreviewBlocks.find((item) => item.id === id);
+
+    if (previewBlock) {
+      const exactMatches = currentBlocks.filter((block) => block.text === previewBlock.sourceText);
+      if (exactMatches.length > 0) {
+        return exactMatches.reduce((best, block) => {
+          const bestDistance = Math.abs(best.start - previewBlock.sourceStart);
+          const blockDistance = Math.abs(block.start - previewBlock.sourceStart);
+          return blockDistance < bestDistance ? block : best;
+        });
+      }
+
+      const currentById = currentBlocks.find((block) => block.id === id);
+      if (currentById) return currentById;
+
+      const currentByOffset = currentBlocks.find((block) => (
+        previewBlock.sourceStart >= block.start && previewBlock.sourceStart <= block.end
+      ));
+      if (currentByOffset) return currentByOffset;
+
+      return {
+        id,
+        text: previewBlock.sourceText,
+        start: Math.min(previewBlock.sourceStart, els.sourceInput.value.length),
+        end: Math.min(previewBlock.sourceEnd, els.sourceInput.value.length),
+        active: false
+      };
+    }
+
+    return currentBlocks.find((block) => block.id === id) ||
+      latestSourceBlocks.find((block) => block.id === id);
+  }
+
+  function scrollSourceToPosition(position) {
+    const caretTop = measureTextareaCaretTop(position);
+    const targetTop = Math.max(0, caretTop - els.sourceInput.clientHeight * 0.22);
+    els.sourceInput.scrollTo({ top: targetTop, behavior: "smooth" });
+  }
+
+  function measureTextareaCaretTop(position) {
+    const styles = window.getComputedStyle(els.sourceInput);
+    const mirror = document.createElement("div");
+    const copiedProperties = [
+      "boxSizing",
+      "fontFamily",
+      "fontSize",
+      "fontStyle",
+      "fontWeight",
+      "letterSpacing",
+      "lineHeight",
+      "paddingTop",
+      "paddingRight",
+      "paddingBottom",
+      "paddingLeft",
+      "tabSize",
+      "textAlign",
+      "textIndent",
+      "textTransform",
+      "wordSpacing"
+    ];
+
+    copiedProperties.forEach((property) => {
+      mirror.style[property] = styles[property];
+    });
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.left = "-9999px";
+    mirror.style.top = "0";
+    mirror.style.width = `${els.sourceInput.clientWidth}px`;
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.overflowWrap = "break-word";
+    mirror.style.wordBreak = "normal";
+    mirror.style.border = "0";
+
+    const marker = document.createElement("span");
+    marker.textContent = "\u200b";
+    mirror.textContent = els.sourceInput.value.slice(0, position);
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+
+    const caretTop = marker.offsetTop;
+    mirror.remove();
+    return caretTop;
+  }
+
+  function updatePreviewSelection() {
+    els.preview.querySelectorAll(".preview-block").forEach((block) => {
+      block.classList.toggle("is-selected", block.dataset.blockId === selectedPreviewBlockId);
+    });
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(String(value));
   }
 
   function highlightPreview() {
@@ -462,6 +622,23 @@
   els.translateNow.addEventListener("click", () => runTranslation({ force: true, mode: "quick" }));
   els.refineNow.addEventListener("click", () => runTranslation({ force: true, mode: "refine" }));
   els.saveSnapshot.addEventListener("click", saveSnapshot);
+
+  els.preview.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+    const previewBlock = event.target.closest(".preview-block");
+    if (!previewBlock || !els.preview.contains(previewBlock)) return;
+    event.preventDefault();
+    jumpToSourceBlock(previewBlock.dataset.blockId);
+  });
+
+  els.preview.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    if (!(event.target instanceof Element)) return;
+    const previewBlock = event.target.closest(".preview-block");
+    if (!previewBlock || !els.preview.contains(previewBlock)) return;
+    event.preventDefault();
+    jumpToSourceBlock(previewBlock.dataset.blockId);
+  });
 
   loadInitialState();
   checkHealth();
