@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Interactive Bilingual Writer</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/vendor/highlight-github.min.css">
+  </head>
+  <body>
+    <header class="app-bar">
+      <div>
+        <h1>Interactive Bilingual Writer</h1>
+        <p id="modelLine">Local Ollama translator</p>
+      </div>
+      <div id="status" class="status">Idle</div>
+    </header>
+
+    <main class="workspace">
+      <section class="pane editor-pane">
+        <div class="toolbar">
+          <label>
+            Direction
+            <select id="direction">
+              <option value="auto">Auto</option>
+              <option value="en-zh">English to Chinese</option>
+              <option value="zh-en">Chinese to English</option>
+            </select>
+          </label>
+          <label>
+            Delay
+            <input id="debounceSeconds" type="number" min="0.5" max="10" step="0.5" value="2">
+          </label>
+          <label>
+            Min change
+            <input id="minChars" type="number" min="0" max="500" step="1" value="12">
+          </label>
+          <label class="check-control">
+            <input id="includeActive" type="checkbox" checked>
+            Active paragraph
+          </label>
+        </div>
+
+        <textarea
+          id="sourceInput"
+          spellcheck="true"
+          placeholder="Write Markdown here..."
+        ></textarea>
+
+        <div class="pane-footer">
+          <span id="sourceCount">0 chars</span>
+          <span id="lastRun">Not translated yet</span>
+        </div>
+      </section>
+
+      <section class="pane preview-pane">
+        <div class="toolbar preview-toolbar">
+          <div>
+            <span id="targetLabel">Preview</span>
+            <span id="stats" class="muted"></span>
+          </div>
+          <div class="button-row">
+            <label class="export-control">
+              Export
+              <select id="exportFormat">
+                <option value="sections">Sections</option>
+                <option value="target">Target only</option>
+                <option value="interleaved">Interleaved</option>
+                <option value="table">Table</option>
+              </select>
+            </label>
+            <button id="translateNow" type="button">Translate</button>
+            <button id="refineNow" type="button">Refine</button>
+            <button id="saveSnapshot" type="button">Save</button>
+          </div>
+        </div>
+
+        <article id="preview" class="preview empty"></article>
+      </section>
+    </main>
+
+    <script src="/static/vendor/marked.umd.js"></script>
+    <script src="/static/vendor/highlight.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

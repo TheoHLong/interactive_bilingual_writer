@@ -1,0 +1,8 @@
+.DS_Store
+.cache/*
+!.cache/.gitkeep
+drafts/*
+!drafts/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
