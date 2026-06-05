@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterator, Optional, Tuple
 
 # v3: glossary entries are directional and reversed for Chinese-to-English.
 PROMPT_VERSION = "quick-markdown-v3"
+REFINE_PROMPT_VERSION = "refine-context-v1"
 
 
 class OllamaTranslationError(RuntimeError):
@@ -106,10 +107,17 @@ class OllamaTranslator:
             return True
         return False
 
-    def translate(self, text: str, source_lang: str, target_lang: str, mode: str) -> str:
+    def translate(
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        mode: str,
+        context: Optional[Dict[str, str]] = None,
+    ) -> str:
         if mode == "refine":
             initial = self._translate_quick(text, source_lang, target_lang)
-            return self.refine(text, source_lang, target_lang, initial)
+            return self.refine(text, source_lang, target_lang, initial, context=context)
         return self._translate_quick(text, source_lang, target_lang)
 
     def translate_stream(
@@ -119,10 +127,17 @@ class OllamaTranslator:
         target_lang: str,
         mode: str,
         initial: Optional[str] = None,
+        context: Optional[Dict[str, str]] = None,
     ) -> Iterator[str]:
         if mode == "refine":
             quick_initial = initial or self._translate_quick(text, source_lang, target_lang)
-            yield from self.refine_stream(text, source_lang, target_lang, quick_initial)
+            yield from self.refine_stream(
+                text,
+                source_lang,
+                target_lang,
+                quick_initial,
+                context=context,
+            )
             return
 
         prompt, system_message = self._quick_prompt(text, source_lang, target_lang)
@@ -134,8 +149,15 @@ class OllamaTranslator:
         source_lang: str,
         target_lang: str,
         quick_initial: str,
+        context: Optional[Dict[str, str]] = None,
     ) -> str:
-        return self._translate_refined(text, source_lang, target_lang, quick_initial)
+        return self._translate_refined(
+            text,
+            source_lang,
+            target_lang,
+            quick_initial,
+            context=context,
+        )
 
     def refine_stream(
         self,
@@ -143,9 +165,23 @@ class OllamaTranslator:
         source_lang: str,
         target_lang: str,
         quick_initial: str,
+        context: Optional[Dict[str, str]] = None,
     ) -> Iterator[str]:
-        notes = self._reflection_notes(text, source_lang, target_lang, quick_initial)
-        final_prompt = self._improvement_prompt(text, target_lang, quick_initial, notes)
+        notes = self._reflection_notes(
+            text,
+            source_lang,
+            target_lang,
+            quick_initial,
+            context=context,
+        )
+        final_prompt = self._improvement_prompt(
+            text,
+            source_lang,
+            target_lang,
+            quick_initial,
+            notes,
+            context=context,
+        )
         yield from self._completion_stream(
             final_prompt,
             "You are an expert translation editor.",
@@ -182,9 +218,23 @@ Translate natural-language prose only.
         source_lang: str,
         target_lang: str,
         initial: str,
+        context: Optional[Dict[str, str]] = None,
     ) -> str:
-        notes = self._reflection_notes(text, source_lang, target_lang, initial)
-        final_prompt = self._improvement_prompt(text, target_lang, initial, notes)
+        notes = self._reflection_notes(
+            text,
+            source_lang,
+            target_lang,
+            initial,
+            context=context,
+        )
+        final_prompt = self._improvement_prompt(
+            text,
+            source_lang,
+            target_lang,
+            initial,
+            notes,
+            context=context,
+        )
         return self._completion(final_prompt, "You are an expert translation editor.")
 
     def _reflection_notes(
@@ -193,16 +243,26 @@ Translate natural-language prose only.
         source_lang: str,
         target_lang: str,
         initial: str,
+        context: Optional[Dict[str, str]] = None,
     ) -> str:
-        reflection_prompt = f"""Review this {source_lang} to {target_lang} translation.
+        glossary = self.load_glossary()
+        glossary_block = self._format_glossary(glossary, source_lang, target_lang)
+        context_block = self._format_refine_context(context, source_lang, target_lang)
+        reflection_prompt = f"""Review this {source_lang} to {target_lang} translation of the current paragraph.
+Use the neighboring context only to resolve continuity, pronouns, terminology, and tone.
+Do not translate the neighboring paragraphs.
+Preserve Markdown syntax, headings, lists, links, code fences, inline code, URLs, and LaTeX math.
+{glossary_block}
 
-Source:
+{context_block}
+
+Current source paragraph:
 {text}
 
-Translation:
+Current translation:
 {initial}
 
-Give concise, specific improvement notes only.
+Give concise, specific improvement notes for the current paragraph only.
 """
         notes = self._completion(
             reflection_prompt,
@@ -210,16 +270,26 @@ Give concise, specific improvement notes only.
         )
         return notes
 
-    @staticmethod
     def _improvement_prompt(
+        self,
         text: str,
+        source_lang: str,
         target_lang: str,
         initial: str,
         notes: str,
+        context: Optional[Dict[str, str]] = None,
     ) -> str:
-        final_prompt = f"""Improve the translation using the notes.
+        glossary = self.load_glossary()
+        glossary_block = self._format_glossary(glossary, source_lang, target_lang)
+        context_block = self._format_refine_context(context, source_lang, target_lang)
+        final_prompt = f"""Improve only the current paragraph translation using the notes and neighboring context.
+Use context for continuity, pronouns, terminology, and tone, but do not translate neighboring paragraphs.
+Preserve Markdown syntax, headings, lists, links, code fences, inline code, URLs, and LaTeX math.
+{glossary_block}
 
-Source:
+{context_block}
+
+Current source paragraph:
 {text}
 
 Current translation:
@@ -228,9 +298,34 @@ Current translation:
 Notes:
 {notes}
 
-Output only the improved {target_lang} translation.
+Output only the improved {target_lang} translation of the current paragraph.
 """
         return final_prompt
+
+    @staticmethod
+    def _format_refine_context(
+        context: Optional[Dict[str, str]],
+        source_lang: str,
+        target_lang: str,
+    ) -> str:
+        context = context or {}
+        previous_source = (context.get("previous_source") or "").strip()
+        previous_translation = (context.get("previous_translation") or "").strip()
+        next_source = (context.get("next_source") or "").strip()
+
+        lines = [
+            "Neighboring context:",
+            "(Use this for continuity only; translate only the current paragraph.)",
+        ]
+        if previous_source:
+            lines.extend([f"Previous {source_lang} paragraph:", previous_source])
+        if previous_translation:
+            lines.extend([f"Previous {target_lang} translation:", previous_translation])
+        if next_source:
+            lines.extend([f"Next {source_lang} paragraph:", next_source])
+        if len(lines) == 2:
+            lines.append("(none)")
+        return "\n".join(lines)
 
     @staticmethod
     def _format_glossary(

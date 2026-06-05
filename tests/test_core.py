@@ -3,10 +3,13 @@ from pathlib import Path
 import json
 
 from app import (
+    Segment,
+    context_for_refine,
     format_draft,
     markdown_structure_counts,
     ndjson_event,
     normalize_export_format,
+    refine_context_hash,
     structure_warnings,
 )
 from cache import TranslationCache
@@ -51,6 +54,107 @@ def test_format_glossary_directional():
     zh_to_en = OllamaTranslator._format_glossary(glossary, "Chinese", "English")
     assert "嵌入向量: embedding" in zh_to_en
     assert "Transformer: Transformer" in zh_to_en
+
+
+def test_refine_prompt_includes_neighbor_context():
+    translator = OllamaTranslator()
+    context = {
+        "previous_source": "The model stores facts in memory.",
+        "previous_translation": "模型将事实存储在记忆中。",
+        "next_source": "This makes later retrieval faster.",
+    }
+
+    prompt = translator._improvement_prompt(
+        "It then answers the question.",
+        "English",
+        "Chinese",
+        "然后它回答问题。",
+        "Keep pronouns consistent with the previous paragraph.",
+        context=context,
+    )
+
+    assert "Previous English paragraph:" in prompt
+    assert "Previous Chinese translation:" in prompt
+    assert "Next English paragraph:" in prompt
+    assert "模型将事实存储在记忆中。" in prompt
+    assert "Output only the improved Chinese translation of the current paragraph." in prompt
+
+
+def test_context_for_refine_prefers_current_run_previous_translation():
+    segments = [
+        Segment(id="0", text="Previous source."),
+        Segment(
+            id="1",
+            text="Current source.",
+            previous_text="Previous source.",
+            previous_translation="Stale previous translation.",
+            next_text="Next source.",
+        ),
+    ]
+    results = [{"id": "0", "translation": "Fresh previous translation."}]
+
+    context = context_for_refine(segments, 1, results)
+
+    assert context["previous_source"] == "Previous source."
+    assert context["previous_translation"] == "Fresh previous translation."
+    assert context["next_source"] == "Next source."
+
+
+def test_context_for_refine_uses_preview_translation_when_previous_is_omitted():
+    segments = [
+        Segment(id="0", text="Current source."),
+        Segment(
+            id="2",
+            text="Later source.",
+            previous_text="Omitted active source.",
+            previous_translation="Preview translation.",
+            next_text="Next source.",
+        ),
+    ]
+    results = [{"id": "0", "translation": "Current translation."}]
+
+    context = context_for_refine(segments, 1, results)
+
+    assert context["previous_source"] == "Omitted active source."
+    assert context["previous_translation"] == "Preview translation."
+    assert context["next_source"] == "Next source."
+
+
+def test_context_hash_changes_cache_key():
+    base = TranslationCache.make_key(
+        text="Current source.",
+        source_lang="English",
+        target_lang="Chinese",
+        model="test-model",
+        mode="refine",
+        prompt_version="refine-context-v1",
+        glossary_hash="glossary",
+        context_hash=refine_context_hash(
+            {
+                "previous_source": "A",
+                "previous_translation": "甲",
+                "next_source": "B",
+            }
+        ),
+    )
+    changed = TranslationCache.make_key(
+        text="Current source.",
+        source_lang="English",
+        target_lang="Chinese",
+        model="test-model",
+        mode="refine",
+        prompt_version="refine-context-v1",
+        glossary_hash="glossary",
+        context_hash=refine_context_hash(
+            {
+                "previous_source": "A",
+                "previous_translation": "甲",
+                "next_source": "Changed next source.",
+            }
+        ),
+    )
+
+    assert base != changed
 
 
 def test_strip_thinking():

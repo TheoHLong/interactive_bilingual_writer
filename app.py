@@ -6,7 +6,7 @@ import re
 import socket
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -14,7 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from cache import TranslationCache
-from translator import OllamaTranslationError, OllamaTranslator, PROMPT_VERSION
+from translator import (
+    OllamaTranslationError,
+    OllamaTranslator,
+    PROMPT_VERSION,
+    REFINE_PROMPT_VERSION,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +38,9 @@ api.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 class Segment(BaseModel):
     id: str
     text: str
+    previous_text: Optional[str] = None
+    next_text: Optional[str] = None
+    previous_translation: Optional[str] = None
 
 
 class TranslateRequest(BaseModel):
@@ -79,6 +87,16 @@ def translate(payload: TranslateRequest) -> JSONResponse:
         for index_value, segment in enumerate(payload.segments):
             segment_id = segment.id or str(index_value)
             text = segment.text
+            refine_context = (
+                context_for_refine(payload.segments, index_value, results)
+                if mode == "refine"
+                else None
+            )
+            context_hash = (
+                refine_context_hash(refine_context)
+                if refine_context is not None
+                else None
+            )
 
             if translator.should_skip_translation(text):
                 warnings = structure_warnings(text, text)
@@ -100,6 +118,7 @@ def translate(payload: TranslateRequest) -> JSONResponse:
                 target_lang=target_lang,
                 mode=mode,
                 glossary_hash=glossary_hash,
+                context_hash=context_hash,
             )
             cached_value = cache.get(key)
             if cached_value is not None:
@@ -143,13 +162,20 @@ def translate(payload: TranslateRequest) -> JSONResponse:
                         source_lang,
                         target_lang,
                         initial_translation or "",
+                        context=refine_context,
                     )
                 else:
                     translation = translator.translate(text, source_lang, target_lang, mode)
                 cache.set(
                     key,
                     translation,
-                    cache_metadata(source_lang, target_lang, mode, glossary_hash),
+                    cache_metadata(
+                        source_lang,
+                        target_lang,
+                        mode,
+                        glossary_hash,
+                        context_hash=context_hash,
+                    ),
                 )
                 cached = False
                 stats["translated"] += 1
@@ -248,6 +274,16 @@ def stream_translation_events(payload: TranslateRequest) -> Iterator[str]:
         for index_value, segment in enumerate(payload.segments):
             segment_id = segment.id or str(index_value)
             text = segment.text
+            refine_context = (
+                context_for_refine(payload.segments, index_value, results)
+                if mode == "refine"
+                else None
+            )
+            context_hash = (
+                refine_context_hash(refine_context)
+                if refine_context is not None
+                else None
+            )
 
             if translator.should_skip_translation(text):
                 warnings = structure_warnings(text, text)
@@ -269,6 +305,7 @@ def stream_translation_events(payload: TranslateRequest) -> Iterator[str]:
                 target_lang=target_lang,
                 mode=mode,
                 glossary_hash=glossary_hash,
+                context_hash=context_hash,
             )
             cached_value = cache.get(key)
             if cached_value is not None:
@@ -318,6 +355,7 @@ def stream_translation_events(payload: TranslateRequest) -> Iterator[str]:
                 target_lang,
                 mode,
                 initial=initial_translation,
+                context=refine_context,
             ):
                 chunks.append(chunk)
                 yield ndjson_event({"type": "chunk", "id": segment_id, "text": chunk})
@@ -330,7 +368,13 @@ def stream_translation_events(payload: TranslateRequest) -> Iterator[str]:
             cache.set(
                 key,
                 translation,
-                cache_metadata(source_lang, target_lang, mode, glossary_hash),
+                cache_metadata(
+                    source_lang,
+                    target_lang,
+                    mode,
+                    glossary_hash,
+                    context_hash=context_hash,
+                ),
             )
             stats["translated"] += 1
             result = {
@@ -408,6 +452,7 @@ def make_cache_key(
     target_lang: str,
     mode: str,
     glossary_hash: str,
+    context_hash: Optional[str] = None,
 ) -> str:
     return cache.make_key(
         text=text,
@@ -415,8 +460,9 @@ def make_cache_key(
         target_lang=target_lang,
         model=translator.model,
         mode=mode,
-        prompt_version=PROMPT_VERSION,
+        prompt_version=prompt_version_for_mode(mode),
         glossary_hash=glossary_hash,
+        context_hash=context_hash,
     )
 
 
@@ -425,15 +471,62 @@ def cache_metadata(
     target_lang: str,
     mode: str,
     glossary_hash: str,
+    context_hash: Optional[str] = None,
 ) -> Dict[str, str]:
-    return {
+    metadata = {
         "source_lang": source_lang,
         "target_lang": target_lang,
         "model": translator.model,
         "mode": mode,
-        "prompt_version": PROMPT_VERSION,
+        "prompt_version": prompt_version_for_mode(mode),
         "glossary_hash": glossary_hash,
     }
+    if context_hash is not None:
+        metadata["context_hash"] = context_hash
+    return metadata
+
+
+def prompt_version_for_mode(mode: str) -> str:
+    return REFINE_PROMPT_VERSION if mode == "refine" else PROMPT_VERSION
+
+
+def context_for_refine(
+    segments: List[Segment],
+    index_value: int,
+    results: List[Dict[str, Any]],
+) -> Dict[str, str]:
+    segment = segments[index_value]
+    previous_source = (
+        segment.previous_text
+        if segment.previous_text is not None
+        else (segments[index_value - 1].text if index_value > 0 else "")
+    )
+    next_source = (
+        segment.next_text
+        if segment.next_text is not None
+        else (segments[index_value + 1].text if index_value + 1 < len(segments) else "")
+    )
+
+    previous_translation = ""
+    if (
+        index_value > 0
+        and previous_source == segments[index_value - 1].text
+        and results
+    ):
+        previous_translation = str(results[-1].get("translation") or "")
+    elif segment.previous_translation:
+        previous_translation = segment.previous_translation
+
+    return {
+        "previous_source": previous_source or "",
+        "previous_translation": previous_translation or "",
+        "next_source": next_source or "",
+    }
+
+
+def refine_context_hash(context: Dict[str, str]) -> str:
+    encoded = json.dumps(context, ensure_ascii=False, sort_keys=True)
+    return TranslationCache.hash_text(encoded)
 
 
 def save_latest_draft(

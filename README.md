@@ -65,6 +65,8 @@ glossary hash, so prompt or glossary changes do not reuse stale translations.
 Completed translations are checked for lightweight Markdown structure drift
 across headings, code blocks, links, images, tables, and list items; mismatches
 are reported in the preview stats tooltip.
+Refine mode reviews the current paragraph with neighboring context: previous
+source, previous available translation, and next source.
 
 ## Test
 

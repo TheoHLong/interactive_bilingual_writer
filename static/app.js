@@ -194,9 +194,25 @@
     }
 
     const includeActive = els.includeActive.checked;
+    const previewTranslationById = new Map(
+      latestPreviewBlocks.map((block) => [String(block.id), block.markdown || ""])
+    );
     const segments = blocks
-      .filter((block) => includeActive || !block.active)
-      .map((block) => ({ id: block.id, text: block.text }));
+      .map((block, index) => ({ block, index }))
+      .filter(({ block }) => includeActive || !block.active)
+      .map(({ block, index }) => {
+        const previousBlock = blocks[index - 1];
+        const nextBlock = blocks[index + 1];
+        return {
+          id: block.id,
+          text: block.text,
+          previous_text: previousBlock ? previousBlock.text : "",
+          next_text: nextBlock ? nextBlock.text : "",
+          previous_translation: previousBlock
+            ? (previewTranslationById.get(String(previousBlock.id)) || "")
+            : ""
+        };
+      });
 
     if (segments.length === 0) {
       latestTranslation = "";

@@ -53,6 +53,7 @@ class TranslationCache:
         mode: str,
         prompt_version: str,
         glossary_hash: str,
+        context_hash: Optional[str] = None,
     ) -> str:
         payload = {
             "text_hash": cls.hash_text(text),
@@ -63,6 +64,8 @@ class TranslationCache:
             "prompt_version": prompt_version,
             "glossary_hash": glossary_hash,
         }
+        if context_hash is not None:
+            payload["context_hash"] = context_hash
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return cls.hash_text(encoded)
 
